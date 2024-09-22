@@ -21,7 +21,7 @@ import torch
 import torch.nn.functional as F
 from dgl.data.tu import TUDataset
 from scipy.sparse import linalg
-
+os.chdir('/Users/jensen/PycharmProjects/GCC/')
 
 def batcher():
     def batcher_dev(batch):
@@ -44,6 +44,19 @@ def labeled_batcher():
 Data = namedtuple("Data", ["x", "edge_index", "y"])
 
 
+# def create_graph_classification_dataset(dataset_name):
+#     name = {
+#         "imdb-binary": "IMDB-BINARY",
+#         "imdb-multi": "IMDB-MULTI",
+#         "rdt-b": "REDDIT-BINARY",
+#         "rdt-5k": "REDDIT-MULTI-5K",
+#         "collab": "COLLAB",
+#     }[dataset_name]
+#     dataset = TUDataset(name)
+#     dataset.num_labels = dataset.num_labels[0]
+#     dataset.graph_labels = dataset.graph_labels.squeeze()
+#     return dataset
+
 def create_graph_classification_dataset(dataset_name):
     name = {
         "imdb-binary": "IMDB-BINARY",
@@ -52,10 +65,20 @@ def create_graph_classification_dataset(dataset_name):
         "rdt-5k": "REDDIT-MULTI-5K",
         "collab": "COLLAB",
     }[dataset_name]
+
     dataset = TUDataset(name)
-    dataset.num_labels = dataset.num_labels[0]
+
+    # 检查 num_labels 的类型
+    if isinstance(dataset.num_labels, (list, tuple)):
+        dataset.num_labels = dataset.num_labels[0]
+    else:
+        # 如果已经是 int 类型，则不做任何操作
+        pass
+
     dataset.graph_labels = dataset.graph_labels.squeeze()
+
     return dataset
+
 
 
 class Edgelist(object):
@@ -72,7 +95,9 @@ class Edgelist(object):
         return self.data
 
     def _preprocess(self, edge_list_path, node_label_path):
+
         with open(edge_list_path) as f:
+        # with open('/Users/jensen/PycharmProjects/GCC/data/struc2vec/usa-airports.edgelist') as f:
             edge_list = []
             node2id = defaultdict(int)
             for line in f:
@@ -191,6 +216,7 @@ class SSDataset(object):
         return torch.LongTensor(edge_list).t(), name_dict, node2id
 
 def create_node_classification_dataset(dataset_name):
+
     if "airport" in dataset_name:
         return Edgelist(
             "data/struc2vec/",
@@ -215,29 +241,59 @@ def create_node_classification_dataset(dataset_name):
         raise NotImplementedError
 
 
+# def _rwr_trace_to_dgl_graph(
+#     g, seed, trace, positional_embedding_size, entire_graph=False
+# ):
+#     subv = torch.unique(torch.cat(trace)).tolist()
+#     try:
+#         subv.remove(seed)
+#     except ValueError:
+#         pass
+#     subv = [seed] + subv
+#     if entire_graph:
+#         subg = g.subgraph(g.nodes())
+#     else:
+#         subg = g.subgraph(subv)
+#
+#     subg = _add_undirected_graph_positional_embedding(subg, positional_embedding_size)
+#
+#     subg.ndata["seed"] = torch.zeros(subg.number_of_nodes(), dtype=torch.long)
+#     if entire_graph:
+#         subg.ndata["seed"][seed] = 1
+#     else:
+#         subg.ndata["seed"][0] = 1
+#     return subg
 def _rwr_trace_to_dgl_graph(
     g, seed, trace, positional_embedding_size, entire_graph=False
 ):
-    subv = torch.unique(torch.cat(trace)).tolist()
+    # Ensure trace is a list of tensors (even if it's a single tensor)
+    if isinstance(trace, torch.Tensor):
+        trace = [trace]  # Wrap in a list if it's a single tensor
+
+    subv = torch.unique(torch.cat(trace)).tolist()  # Concatenate and get unique nodes
+
     try:
-        subv.remove(seed)
+        subv.remove(seed)  # Remove seed node from subv if it exists
     except ValueError:
         pass
-    subv = [seed] + subv
-    if entire_graph:
-        subg = g.subgraph(g.nodes())
-    else:
-        subg = g.subgraph(subv)
+    subv = [seed] + subv  # Ensure seed is the first node
 
+    if entire_graph:
+        subg = g.subgraph(g.nodes())  # Get subgraph of entire graph
+    else:
+        subg = g.subgraph(subv)  # Get subgraph based on subv
+
+    # Add positional embedding
     subg = _add_undirected_graph_positional_embedding(subg, positional_embedding_size)
 
+    # Mark the seed node
     subg.ndata["seed"] = torch.zeros(subg.number_of_nodes(), dtype=torch.long)
     if entire_graph:
         subg.ndata["seed"][seed] = 1
     else:
         subg.ndata["seed"][0] = 1
-    return subg
 
+    return subg
 
 def eigen_decomposision(n, k, laplacian, hidden_size, retry):
     if k <= 0:
@@ -263,19 +319,48 @@ def eigen_decomposision(n, k, laplacian, hidden_size, retry):
     return x
 
 
+# def _add_undirected_graph_positional_embedding(g, hidden_size, retry=10):
+#     # We use eigenvectors of normalized graph laplacian as vertex features.
+#     # It could be viewed as a generalization of positional embedding in the
+#     # attention is all you need paper.
+#     # Recall that the eignvectors of normalized laplacian of a line graph are cos/sin functions.
+#     # See section 2.4 of http://www.cs.yale.edu/homes/spielman/561/2009/lect02-09.pdf
+#     n = g.number_of_nodes()
+#     adj = g.adjacency_matrix_scipy(transpose=False, return_edge_ids=False).astype(float)
+#     norm = sparse.diags(
+#         dgl.backend.asnumpy(g.in_degrees()).clip(1) ** -0.5, dtype=float
+#     )
+#     laplacian = norm * adj * norm
+#     k = min(n - 2, hidden_size)
+#     x = eigen_decomposision(n, k, laplacian, hidden_size, retry)
+#     g.ndata["pos_undirected"] = x.float()
+#     return g
+
+from scipy import sparse
+
+from scipy import sparse
+
+from scipy import sparse
+
+
 def _add_undirected_graph_positional_embedding(g, hidden_size, retry=10):
-    # We use eigenvectors of normalized graph laplacian as vertex features.
-    # It could be viewed as a generalization of positional embedding in the
-    # attention is all you need paper.
-    # Recall that the eignvectors of normalized laplacian of a line graph are cos/sin functions.
-    # See section 2.4 of http://www.cs.yale.edu/homes/spielman/561/2009/lect02-09.pdf
+    # We use eigenvectors of normalized graph Laplacian as vertex features.
     n = g.number_of_nodes()
-    adj = g.adjacency_matrix_scipy(transpose=False, return_edge_ids=False).astype(float)
+
+    # Get the adjacency matrix and convert it to a dense matrix, then to a SciPy sparse matrix
+    adj = g.adjacency_matrix().to_dense().numpy()  # Convert to dense numpy array
+    adj = sparse.csr_matrix(adj)  # Convert to SciPy sparse matrix
+
+    # Normalizing the adjacency matrix
     norm = sparse.diags(
         dgl.backend.asnumpy(g.in_degrees()).clip(1) ** -0.5, dtype=float
     )
     laplacian = norm * adj * norm
+
+    # Eigen-decomposition for positional embeddings
     k = min(n - 2, hidden_size)
     x = eigen_decomposision(n, k, laplacian, hidden_size, retry)
+
+    # Add positional embeddings to node data
     g.ndata["pos_undirected"] = x.float()
     return g

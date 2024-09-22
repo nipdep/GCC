@@ -1,11 +1,11 @@
-scikit-learn==0.20.3
-scipy==1.4.1
+scikit-learn
+scipy
 coverage==4.5.4
 coveralls==1.9.2
 black==19.3b0
 pytest==5.3.2
 networkx==2.3
-numpy==1.18.2
+numpy
 matplotlib==3.1.0
 seaborn==0.9.0
 tqdm==4.43.0

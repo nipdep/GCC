@@ -105,13 +105,13 @@ python scripts/download.py --url https://drive.google.com/open?id=12kmPV3XjVufxb
 Generate embeddings on multiple datasets with
 
 ```bash
-bash scripts/generate.sh <gpu> <load_path> <dataset_1> <dataset_2> ...
+bash scripts/generate_jensen.sh <load_path> <dataset_1> <dataset_2> ...
 ```
 
 For example:
 
 ```bash
-bash scripts/generate.sh 0 saved/Pretrain_moco_True_dgl_gin_layer_5_lr_0.005_decay_1e-05_bsz_32_hid_64_samples_2000_nce_t_0.07_nce_k_16384_rw_hops_256_restart_prob_0.8_aug_1st_ft_False_deg_16_pos_32_momentum_0.999/current.pth usa_airport kdd imdb-binary
+bash scripts/generate_jensen.sh saved/Pretrain_moco_True_dgl_gin_layer_5_lr_0.005_decay_1e-05_bsz_32_hid_64_samples_2000_nce_t_0.07_nce_k_16384_rw_hops_256_restart_prob_0.8_aug_1st_ft_False_deg_16_pos_32_momentum_0.999/current.pth usa_airport kdd imdb-binary
 ```
 
 #### Node Classification
@@ -123,7 +123,7 @@ Run baselines on multiple datasets with `bash scripts/node_classification/baseli
 Evaluate GCC on multiple datasets:
 
 ```bash
-bash scripts/generate.sh <gpu> <load_path> usa_airport h-index
+bash scripts/generate_jensen.sh <load_path> usa_airport h-index
 bash scripts/node_classification/ours.sh <load_path> <hidden_size> usa_airport h-index
 ```
 
@@ -142,7 +142,7 @@ Note this finetunes the whole network and will take much longer than the freezed
 ##### Unsupervised (Table 3 freeze)
 
 ```bash
-bash scripts/generate.sh <gpu> <load_path> imdb-binary imdb-multi collab rdt-b rdt-5k
+bash scripts/generate_jensen.sh <load_path> imdb-binary imdb-multi collab rdt-b rdt-5k
 bash scripts/graph_classification/ours.sh <load_path> <hidden_size> imdb-binary imdb-multi collab rdt-b rdt-5k
 ```
 
@@ -159,7 +159,7 @@ Run baseline (graphwave) on multiple datasets with `bash scripts/similarity_sear
 Run GCC:
 
 ```bash
-bash scripts/generate.sh <gpu> <load_path> kdd icdm sigir cikm sigmod icde
+bash scripts/generate_jensen.sh <load_path> kdd icdm sigir cikm sigmod icde
 bash scripts/similarity_search/ours.sh <load_path> <hidden_size> kdd_icdm sigir_cikm sigmod_icde
 ```
 

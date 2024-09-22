@@ -9,7 +9,7 @@ import dgl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dgl.model_zoo.chem.gnn import GATLayer
+# from dgl.model_zoo.chem.gnn import GATLayer
 
 
 class UnsupervisedGAT(nn.Module):

@@ -1,21 +1,11 @@
-#!/usr/bin/env python
-# encoding: utf-8
-# File Name: graph_dataset.py
-# Author: Jiezhong Qiu
-# Create Time: 2019/12/11 12:17
-# TODO:
-
 import math
 import operator
-
 import dgl
-import dgl.data
-import matplotlib.pyplot as plt
-import networkx as nx
 import numpy as np
 import torch
 from dgl.data import AmazonCoBuy, Coauthor
-from dgl.nodeflow import NodeFlow
+from dgl.dataloading import MultiLayerNeighborSampler, DataLoader
+from dgl.sampling import random_walk
 
 from gcc.datasets import data_util
 
@@ -58,11 +48,9 @@ class LoadBalanceGraphDataset(torch.utils.data.IterableDataset):
         graph_sizes = dgl.data.utils.load_labels(dgl_graphs_file)[
             "graph_sizes"
         ].tolist()
-        print("load graph done")
+        print("Graph loaded")
 
-        # a simple greedy algorithm for load balance
-        # sorted graphs w.r.t its size in decreasing order
-        # for each graph, assign it to the worker with least workload
+        # A simple greedy algorithm for load balancing
         assert num_workers % num_copies == 0
         jobs = [list() for i in range(num_workers // num_copies)]
         workloads = [0] * (num_workers // num_copies)
@@ -80,7 +68,7 @@ class LoadBalanceGraphDataset(torch.utils.data.IterableDataset):
         self.aug = aug
 
     def __len__(self):
-        return self.num_samples * num_workers
+        return self.num_samples * len(self.jobs)
 
     def __iter__(self):
         degrees = torch.cat([g.in_degrees().double() ** 0.75 for g in self.graphs])
@@ -105,10 +93,10 @@ class LoadBalanceGraphDataset(torch.utils.data.IterableDataset):
         if step == 0:
             other_node_idx = node_idx
         else:
-            other_node_idx = dgl.contrib.sampling.random_walk(
-                g=self.graphs[graph_idx], seeds=[node_idx], num_traces=1, num_hops=step
-            )[0][0][-1].item()
+            walk = random_walk(self.graphs[graph_idx], [node_idx], length=step)
+            other_node_idx = walk[0][0][-1].item()
 
+        # Random Walk with Restart (RWR)
         if self.aug == "rwr":
             max_nodes_per_seed = max(
                 self.rw_hops,
@@ -122,45 +110,23 @@ class LoadBalanceGraphDataset(torch.utils.data.IterableDataset):
                     + 0.5
                 ),
             )
-            traces = dgl.contrib.sampling.random_walk_with_restart(
+            traces = random_walk(
                 self.graphs[graph_idx],
                 seeds=[node_idx, other_node_idx],
+                length=self.rw_hops,
                 restart_prob=self.restart_prob,
-                max_nodes_per_seed=max_nodes_per_seed,
             )
-        elif self.aug == "ns":
-            prob = dgl.backend.tensor([], dgl.backend.float32)
-            prob = dgl.backend.zerocopy_to_dgl_ndarray(prob)
-            nf1 = dgl.contrib.sampling.sampler._CAPI_NeighborSampling(
-                self.graphs[graph_idx]._graph,
-                dgl.utils.toindex([node_idx]).todgltensor(),
-                0,  # batch_start_id
-                1,  # batch_size
-                1,  # workers
-                self.num_neighbors,  # expand_factor
-                self.rw_hops,  # num_hops
-                "out",
-                False,
-                prob,
-            )[0]
-            nf1 = NodeFlow(self.graphs[graph_idx], nf1)
-            trace1 = [nf1.layer_parent_nid(i) for i in range(nf1.num_layers)]
-            nf2 = dgl.contrib.sampling.sampler._CAPI_NeighborSampling(
-                self.graphs[graph_idx]._graph,
-                dgl.utils.toindex([other_node_idx]).todgltensor(),
-                0,  # batch_start_id
-                1,  # batch_size
-                1,  # workers
-                self.num_neighbors,  # expand_factor
-                self.rw_hops,  # num_hops
-                "out",
-                False,
-                prob,
-            )[0]
-            nf2 = NodeFlow(self.graphs[graph_idx], nf2)
-            trace2 = [nf2.layer_parent_nid(i) for i in range(nf2.num_layers)]
-            traces = [trace1, trace2]
 
+        # Neighbor Sampling (New DGL API)
+        elif self.aug == "ns":
+            sampler = MultiLayerNeighborSampler([self.num_neighbors] * self.rw_hops)
+            dataloader = DataLoader(
+                self.graphs[graph_idx], torch.tensor([node_idx, other_node_idx]), sampler
+            )
+            blocks = next(iter(dataloader))
+            traces = [blocks[0], blocks[1]]
+
+        # Convert traces to graphs
         graph_q = data_util._rwr_trace_to_dgl_graph(
             g=self.graphs[graph_idx],
             seed=node_idx,
@@ -196,7 +162,8 @@ class GraphDataset(torch.utils.data.Dataset):
         self.step_dist = step_dist
         assert sum(step_dist) == 1.0
         assert positional_embedding_size > 1
-        #  graphs = []
+
+        # Loading graphs from the dataset
         graphs, _ = dgl.data.utils.load_graphs(
             "data_bin/dgl/lscc_graphs.bin", [0, 1, 2]
         )
@@ -210,8 +177,8 @@ class GraphDataset(torch.utils.data.Dataset):
             g.remove_nodes((g.in_degrees() == 0).nonzero().squeeze())
             g.readonly()
             graphs.append(g)
-        # more graphs are comming ...
-        print("load graph done")
+
+        print("Graph loading completed.")
         self.graphs = graphs
         self.length = sum([g.number_of_nodes() for g in self.graphs])
 
@@ -229,34 +196,83 @@ class GraphDataset(torch.utils.data.Dataset):
                 node_idx -= self.graphs[i].number_of_nodes()
         return graph_idx, node_idx
 
+    # def __getitem__(self, idx):
+    #     graph_idx, node_idx = self._convert_idx(idx)
+    #
+    #     step = np.random.choice(len(self.step_dist), 1, p=self.step_dist)[0]
+    #     if step == 0:
+    #         other_node_idx = node_idx
+    #     else:
+    #         walk = random_walk(self.graphs[graph_idx], [node_idx], length=step)
+    #         other_node_idx = walk[0][0][-1].item()
+    #
+    #     max_nodes_per_seed = max(
+    #         self.rw_hops,
+    #         int(
+    #             (
+    #                 self.graphs[graph_idx].out_degrees(node_idx)
+    #                 * math.e
+    #                 / (math.e - 1)
+    #                 / self.restart_prob
+    #             )
+    #             + 0.5
+    #         ),
+    #     )
+    #     traces = random_walk(
+    #         self.graphs[graph_idx],
+    #         seeds=[node_idx, other_node_idx],
+    #         length=self.rw_hops,
+    #         # restart_prob=self.restart_prob,
+    #     )
+    #
+    #     graph_q = data_util._rwr_trace_to_dgl_graph(
+    #         g=self.graphs[graph_idx],
+    #         seed=node_idx,
+    #         trace=traces[0],
+    #         positional_embedding_size=self.positional_embedding_size,
+    #     )
+    #     graph_k = data_util._rwr_trace_to_dgl_graph(
+    #         g=self.graphs[graph_idx],
+    #         seed=other_node_idx,
+    #         trace=traces[1],
+    #         positional_embedding_size=self.positional_embedding_size,
+    #     )
+    #     return graph_q, graph_k
     def __getitem__(self, idx):
-        graph_idx, node_idx = self._convert_idx(idx)
+        graph_idx = 0
+        node_idx = idx
+        for i in range(len(self.graphs)):
+            if node_idx < self.graphs[i].number_of_nodes():
+                graph_idx = i
+                break
+            else:
+                node_idx -= self.graphs[i].number_of_nodes()
 
         step = np.random.choice(len(self.step_dist), 1, p=self.step_dist)[0]
         if step == 0:
             other_node_idx = node_idx
         else:
-            other_node_idx = dgl.contrib.sampling.random_walk(
-                g=self.graphs[graph_idx], seeds=[node_idx], num_traces=1, num_hops=step
-            )[0][0][-1].item()
+            walk = dgl.sampling.random_walk(self.graphs[graph_idx], [node_idx])
+            other_node_idx = walk[0][0][-1].item()
 
         max_nodes_per_seed = max(
             self.rw_hops,
             int(
                 (
-                    self.graphs[graph_idx].out_degree(node_idx)
-                    * math.e
-                    / (math.e - 1)
-                    / self.restart_prob
+                        self.graphs[graph_idx].out_degrees(node_idx)
+                        * math.e
+                        / (math.e - 1)
+                        / self.restart_prob
                 )
                 + 0.5
             ),
         )
-        traces = dgl.contrib.sampling.random_walk_with_restart(
+
+        # Perform Random Walk (without 'restart_prob' directly)
+        traces = dgl.sampling.random_walk(
             self.graphs[graph_idx],
-            seeds=[node_idx, other_node_idx],
-            restart_prob=self.restart_prob,
-            max_nodes_per_seed=max_nodes_per_seed,
+            [node_idx, other_node_idx],  # Seed nodes
+            length=self.rw_hops  # Number of hops (steps)
         )
 
         graph_q = data_util._rwr_trace_to_dgl_graph(
@@ -264,14 +280,12 @@ class GraphDataset(torch.utils.data.Dataset):
             seed=node_idx,
             trace=traces[0],
             positional_embedding_size=self.positional_embedding_size,
-            entire_graph=hasattr(self, "entire_graph") and self.entire_graph,
         )
         graph_k = data_util._rwr_trace_to_dgl_graph(
             g=self.graphs[graph_idx],
             seed=other_node_idx,
             trace=traces[1],
             positional_embedding_size=self.positional_embedding_size,
-            entire_graph=hasattr(self, "entire_graph") and self.entire_graph,
         )
         return graph_q, graph_k
 
@@ -305,7 +319,7 @@ class NodeClassificationDataset(GraphDataset):
         graph.add_nodes(num_nodes)
         graph.add_edges(src, dst)
         graph.add_edges(dst, src)
-        graph.readonly()
+        # graph.readonly()
         return graph
 
 
