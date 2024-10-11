@@ -36,6 +36,7 @@ from gcc.datasets.data_util import batcher, labeled_batcher
 from gcc.models import GraphEncoder
 from gcc.utils.misc import AverageMeter, adjust_learning_rate, warmup_linear
 
+from icecream import ic
 
 def parse_option():
 
@@ -378,9 +379,14 @@ def train_moco(
     for idx, batch in enumerate(train_loader):
         data_time.update(time.time() - end)
         graph_q, graph_k = batch
+        
+        # ic(opt.gpu)
+        device = torch.device(f'cuda:{opt.gpu}' if torch.cuda.is_available() else 'cpu')
 
-        graph_q.to(torch.device(opt.gpu))
-        graph_k.to(torch.device(opt.gpu))
+        # graph_q.cuda(opt.gpu)
+        graph_q = graph_q.to(device)
+        # graph_k.cuda(opt.gpu)
+        graph_k = graph_k.to(device)
 
         bsz = graph_q.batch_size
 
@@ -394,6 +400,7 @@ def train_moco(
             prob = out[:, 0].mean()
         else:
             # ===================Negative sampling forward=====================
+            # ic(graph_q.device)
             feat_q = model(graph_q)
             feat_k = model(graph_k)
 
@@ -683,12 +690,12 @@ def main(args):
     # optionally resume from a checkpoint
     args.start_epoch = 1
     if args.resume:
-        # print("=> loading checkpoint '{}'".format(args.resume))
+        print("=> loading checkpoint '{}'".format(args.resume))
         # checkpoint = torch.load(args.resume, map_location="cpu")
-        # checkpoint = torch.load(args.resume)
-        # args.start_epoch = checkpoint["epoch"] + 1
+        checkpoint = torch.load(args.resume)
+        args.start_epoch = checkpoint["epoch"] + 1
         model.load_state_dict(checkpoint["model"])
-        # optimizer.load_state_dict(checkpoint["optimizer"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
         contrast.load_state_dict(checkpoint["contrast"])
         if args.moco:
             model_ema.load_state_dict(checkpoint["model_ema"])
@@ -711,7 +718,8 @@ def main(args):
     #  sw.add_images('images/graph_k', plots_k, 0, dataformats="NHWC")
 
     # routine
-    for epoch in range(args.start_epoch, args.epochs + 1):
+    print(args.start_epoch, args.epochs)
+    for epoch in range(args.start_epoch, args.start_epoch + args.epochs + 1):
 
         adjust_learning_rate(epoch, args, optimizer)
         print("==> training...")
