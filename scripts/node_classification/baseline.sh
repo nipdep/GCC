@@ -5,5 +5,5 @@ ARGS=${@:3}
 
 for dataset in $ARGS
 do
-    python gcc/tasks/node_classification.py --dataset $dataset --hidden-size $hidden_size --model $model
+    python downstream_node_classification.py --dataset $dataset --hidden-size $hidden_size --model $model
 done
