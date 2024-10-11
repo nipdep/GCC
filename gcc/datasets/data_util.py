@@ -8,6 +8,7 @@
 import io
 import itertools
 import os
+import sys
 import os.path as osp
 from collections import defaultdict, namedtuple
 
@@ -21,7 +22,10 @@ import torch
 import torch.nn.functional as F
 from dgl.data.tu import TUDataset
 from scipy.sparse import linalg
-os.chdir('/Users/jensen/PycharmProjects/GCC/')
+# os.chdir('/Users/jensen/PycharmProjects/GCC/')
+sys.path.append('/home/pathin/gfms/GCC')
+
+from icecream import ic
 
 def batcher():
     def batcher_dev(batch):
@@ -254,30 +258,33 @@ def create_node_classification_dataset(dataset_name):
 #         subg = g.subgraph(g.nodes())
 #     else:
 #         subg = g.subgraph(subv)
-#
+
 #     subg = _add_undirected_graph_positional_embedding(subg, positional_embedding_size)
-#
+
 #     subg.ndata["seed"] = torch.zeros(subg.number_of_nodes(), dtype=torch.long)
 #     if entire_graph:
 #         subg.ndata["seed"][seed] = 1
 #     else:
 #         subg.ndata["seed"][0] = 1
 #     return subg
+
 def _rwr_trace_to_dgl_graph(
     g, seed, trace, positional_embedding_size, entire_graph=False
 ):
     # Ensure trace is a list of tensors (even if it's a single tensor)
     if isinstance(trace, torch.Tensor):
         trace = [trace]  # Wrap in a list if it's a single tensor
-
+    # ic(trace)
     subv = torch.unique(torch.cat(trace)).tolist()  # Concatenate and get unique nodes
+    subv = [x for x in subv if x != -1]  # Filter out -1
 
     try:
         subv.remove(seed)  # Remove seed node from subv if it exists
     except ValueError:
         pass
+    # print("> number of node :",subv)
     subv = [seed] + subv  # Ensure seed is the first node
-
+    # print("> number of node :",subv)
     if entire_graph:
         subg = g.subgraph(g.nodes())  # Get subgraph of entire graph
     else:

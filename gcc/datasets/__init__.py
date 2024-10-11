@@ -1,4 +1,4 @@
-from .graph_dataset import (
+from .graph_dataset1 import (
     GraphClassificationDataset,
     GraphClassificationDatasetLabeled,
     LoadBalanceGraphDataset,
