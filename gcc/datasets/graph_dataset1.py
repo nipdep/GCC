@@ -21,7 +21,7 @@ def worker_init_fn(worker_id):
     np.random.seed(worker_info.seed % (2 ** 32))
 
 
-class LoadBalanceGraphDataset(torch.utils.data.IterableDataset):
+class LoadBalanceGraphDataset(torch.utils.data.IterableDataset): # XXX: it seems that we could use this module directly in CP
     def __init__(
         self,
         rw_hops=64,
@@ -316,15 +316,114 @@ class NodeClassificationDataset(GraphDataset):
     def _create_dgl_graph(self, data):
         graph = dgl.DGLGraph()
         src, dst = data.edge_index.tolist()
-        ic(data.edge_index.max())
+        # ic(data.edge_index.max())
         num_nodes = data.edge_index.max() + 1
-        ic(num_nodes)
+        # ic(num_nodes)
         graph.add_nodes(num_nodes)
         graph.add_edges(src, dst)
         graph.add_edges(dst, src)
         # graph.readonly()
         return graph
 
+class LoadBalanceNodeClassificationDataset(GraphDataset):
+    def __init__(
+        self,
+        dataset,
+        rw_hops=64,
+        subgraph_size=64,
+        restart_prob=0.8,
+        positional_embedding_size=32,
+        step_dist=[1.0, 0.0, 0.0],
+        aug="rwr",
+        num_neighbors=5,
+    ):
+        self.rw_hops = rw_hops
+        self.subgraph_size = subgraph_size
+        self.num_neighbors = num_neighbors
+        self.restart_prob = restart_prob
+        self.positional_embedding_size = positional_embedding_size
+        self.step_dist = step_dist
+        assert positional_embedding_size > 1
+
+        self.data = data_util.create_node_classification_dataset(dataset).data
+        self.graphs = [self._create_dgl_graph(self.data)]
+        self.length = sum([g.number_of_nodes() for g in self.graphs])
+        self.total = self.length
+        assert aug in ("rwr", "ns")
+        self.aug = aug
+
+    def _create_dgl_graph(self, data):
+        graph = dgl.DGLGraph()
+        src, dst = data.edge_index.tolist()
+        # ic(data.edge_index.max())
+        num_nodes = data.edge_index.max() + 1
+        # ic(num_nodes)
+        graph.add_nodes(num_nodes)
+        graph.add_edges(src, dst)
+        graph.add_edges(dst, src)
+        # graph.readonly()
+        return graph
+    
+    def __getitem__(self, idx):
+        graph_idx = 0
+        node_idx = idx
+        for i in range(len(self.graphs)):
+            if node_idx < self.graphs[i].number_of_nodes():
+                graph_idx = i
+                break
+            else:
+                node_idx -= self.graphs[i].number_of_nodes()
+
+        step = np.random.choice(len(self.step_dist), 1, p=self.step_dist)[0]
+        if step == 0:
+            other_node_idx = node_idx
+        else:
+            walk = dgl.sampling.random_walk(self.graphs[graph_idx], [node_idx])
+            other_node_idx = walk[0][0][-1].item()
+
+        # Random Walk with Restart (RWR)
+        if self.aug == "rwr":
+            max_nodes_per_seed = max(
+                self.rw_hops,
+                int(
+                    (
+                        (self.graphs[graph_idx].in_degrees(node_idx) ** 0.75)
+                        * math.e
+                        / (math.e - 1)
+                        / self.restart_prob
+                    )
+                    + 0.5
+                ),
+            )
+            traces = random_walk(
+                self.graphs[graph_idx],
+                [node_idx, other_node_idx],
+                length=self.rw_hops,
+                restart_prob=self.restart_prob,
+            )
+
+        # Neighbor Sampling (New DGL API)
+        elif self.aug == "ns":
+            sampler = MultiLayerNeighborSampler([self.num_neighbors] * self.rw_hops)
+            dataloader = DataLoader(
+                self.graphs[graph_idx], torch.tensor([node_idx, other_node_idx]), sampler
+            )
+            blocks = next(iter(dataloader))
+            traces = [blocks[0], blocks[1]]
+
+        graph_q = data_util._rwr_trace_to_dgl_graph(
+            g=self.graphs[graph_idx],
+            seed=node_idx,
+            trace=traces[0],
+            positional_embedding_size=self.positional_embedding_size,
+        )
+        graph_k = data_util._rwr_trace_to_dgl_graph(
+            g=self.graphs[graph_idx],
+            seed=other_node_idx,
+            trace=traces[1],
+            positional_embedding_size=self.positional_embedding_size,
+        )
+        return graph_q, graph_k
 
 class GraphClassificationDataset(NodeClassificationDataset):
     def __init__(
