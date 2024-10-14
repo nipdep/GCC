@@ -1,0 +1,7 @@
+python downstream_node_classification.py --dataset usa_airport --hidden-size 64 --model from_numpy --emb-path "saved/Pretrain_moco_True_dgl_gin_layer_5_lr_0.005_decay_1e-05_bsz_32_hid_64_samples_2000_nce_t_0.07_nce_k_16384_rw_hops_256_restart_prob_0.8_aug_1st_ft_False_deg_16_pos_32_momentum_0.999/usa_airport.npy"
+
+python downstream_node_classification.py --dataset h-index --hidden-size 64 --model from_numpy --emb-path "saved/Pretrain_moco_True_dgl_gin_layer_5_lr_0.005_decay_1e-05_bsz_32_hid_64_samples_2000_nce_t_0.07_nce_k_16384_rw_hops_256_restart_prob_0.8_aug_1st_ft_False_deg_16_pos_32_momentum_0.999/h-index.npy"
+
+bash scripts/finetune.sh saved/Pretrain_moco_True_dgl_gin_layer_5_lr_0.005_decay_1e-05_bsz_32_hid_64_samples_2000_nce_t_0.07_nce_k_16384_rw_hops_256_restart_prob_0.8_aug_1st_ft_False_deg_16_pos_32_momentum_0.999 1 usa_airport
+
+bash scripts/ctrain.sh /data/pathin/gfms/GCC/saved/Pretrain_moco_False_dgl_gin_layer_5_lr_0.005_decay_1e-05_bsz_256_hid_64_samples_2000_nce_t_0.07_nce_k_32_rw_hops_4_restart_prob_0.8_aug_1st_ft_False_deg_16_pos_32_momentum_0.999 1 h-index --batch-size 256
