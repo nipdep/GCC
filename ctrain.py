@@ -205,14 +205,15 @@ def train_finetune(
     graph_size = AverageMeter()
     max_num_nodes = 0
     max_num_edges = 0
+    device = torch.device(f'cuda:{opt.gpu}' if torch.cuda.is_available() else 'cpu')
 
     end = time.time()
     for idx, batch in enumerate(train_loader):
         data_time.update(time.time() - end)
         graph_q, y = batch
 
-        graph_q.to(torch.device(opt.gpu))
-        y = y.to(torch.device(opt.gpu))
+        graph_q = graph_q.to(device)
+        y = y.to(device)
 
         bsz = graph_q.batch_size
 
@@ -313,7 +314,7 @@ def test_finetune(epoch, valid_loader, model, output_layer, criterion, sw, opt):
     for idx, batch in enumerate(valid_loader):
         graph_q, y = batch
 
-        graph_q.to(torch.device(opt.gpu))
+        graph_q = graph_q.to(torch.device(opt.gpu))
         y = y.to(torch.device(opt.gpu))
 
         bsz = graph_q.batch_size
@@ -623,6 +624,73 @@ def train_moco(
             max_num_nodes, max_num_edges = 0, 0
     return epoch_loss_meter.avg
 
+def get_optimizer(args, model):
+    if args.optimizer == "sgd":
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=args.learning_rate,
+            momentum=args.momentum,
+            weight_decay=args.weight_decay,
+        )
+    elif args.optimizer == "adam":
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=args.learning_rate,
+            betas=(args.beta1, args.beta2),
+            weight_decay=args.weight_decay,
+        )
+    elif args.optimizer == "adagrad":
+        optimizer = torch.optim.Adagrad(
+            model.parameters(),
+            lr=args.learning_rate,
+            lr_decay=args.lr_decay_rate,
+            weight_decay=args.weight_decay,
+        )
+    else:
+        raise NotImplementedError
+    
+    return optimizer
+
+def save_model(args, model, contrast, optimizer, epoch, phase='pre_training', checkpoint=True):
+    state = {
+        "opt": args,
+        "model": model.state_dict(),
+        "contrast": contrast.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
+    }
+    
+    save_dir = f"{args.model_folder}/{phase}"
+
+    if not os.path.isdir(save_dir):
+        os.makedirs(save_dir)
+
+    if checkpoint:
+        save_file = f"{save_dir}/ckpt_epoch_{epoch}.pth"
+    else:
+        save_file = f"{save_dir}/current.pth"
+    torch.save(state, save_file)
+    # help release GPU memory
+    del state
+
+def load_checkpoint(save_path, model, optimizer, contrast, model_ema=None):
+    print("=> loading checkpoint '{}'".format(args.resume))
+    # checkpoint = torch.load(args.resume, map_location="cpu")
+    checkpoint = torch.load(save_path)
+    args.start_epoch = checkpoint["epoch"] + 1
+    model.load_state_dict(checkpoint["model"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    contrast.load_state_dict(checkpoint["contrast"])
+    if args.moco:
+        model_ema.load_state_dict(checkpoint["model_ema"])
+
+    print(
+        "=> loaded successfully '{}' (epoch {})".format(
+            args.resume, checkpoint["epoch"]
+        )
+    )
+    del checkpoint
+    torch.cuda.empty_cache()
 
 # def main(args, trial):
 def main(args):
@@ -660,100 +728,42 @@ def main(args):
 
     mem = psutil.virtual_memory()
     print("before construct dataset", mem.used / 1024 ** 3)
-    if args.finetune: 
-        if args.dataset in GRAPH_CLASSIFICATION_DSETS:
-            dataset = GraphClassificationDatasetLabeled(
-                dataset=args.dataset,
-                rw_hops=args.rw_hops,
-                subgraph_size=args.subgraph_size,
-                restart_prob=args.restart_prob,
-                positional_embedding_size=args.positional_embedding_size,
-            )
-            labels = dataset.dataset.data.y.tolist()
-        else:
-            dataset = NodeClassificationDatasetLabeled(
-                dataset=args.dataset,
-                rw_hops=args.rw_hops,
-                subgraph_size=args.subgraph_size,
-                restart_prob=args.restart_prob,
-                positional_embedding_size=args.positional_embedding_size,
-            )
-            labels = dataset.data.y.argmax(dim=1).tolist()
 
-        skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=args.seed)
-        idx_list = []
-        for idx in skf.split(np.zeros(len(labels)), labels):
-            idx_list.append(idx)
-        assert (
-            0 <= args.fold_idx and args.fold_idx < 10
-        ), "fold_idx must be from 0 to 9."
-        train_idx, test_idx = idx_list[args.fold_idx]
-        train_dataset = torch.utils.data.Subset(dataset, train_idx)
-        valid_dataset = torch.utils.data.Subset(dataset, test_idx)
-    elif args.ctrain:
-        
-        # train_dataset = LoadBalanceGraphDataset(
-        #     rw_hops=args.rw_hops,
-        #     restart_prob=args.restart_prob,
-        #     positional_embedding_size=args.positional_embedding_size,
-        #     num_workers=args.num_workers,
-        #     num_samples=args.num_samples,
-        #     dgl_graphs_file="data/hindex/aminer_hindex_rand1_5000.edgelist",
-        #     num_copies=args.num_copies,
-        # )
+    dataset = LoadBalanceNodeClassificationDataset(
+        dataset=args.dataset,
+        rw_hops=args.rw_hops,
+        subgraph_size=args.subgraph_size,
+        restart_prob=args.restart_prob,
+        positional_embedding_size=args.positional_embedding_size,
+    )
+    labels = dataset.data.y.argmax(dim=1).tolist()
 
-        train_dataset = LoadBalanceNodeClassificationDataset(
+    # Create stratified shuffle split object
+    stratified_split = StratifiedShuffleSplit(
+        n_splits=1, test_size=0.2, random_state=args.seed  # Adjust test_size as needed
+    )
+    # Generate train and test indices
+    for train_idx, test_idx in stratified_split.split(np.zeros(len(labels)), labels):
+        pass  # The split method returns the indices directly
+
+    pre_train_dataset = torch.utils.data.Subset(dataset, train_idx)
+    
+    
+    _dataset = dataset = NodeClassificationDatasetLabeled(
             dataset=args.dataset,
             rw_hops=args.rw_hops,
             subgraph_size=args.subgraph_size,
             restart_prob=args.restart_prob,
             positional_embedding_size=args.positional_embedding_size,
         )
-        # labels = dataset.data.y.argmax(dim=1).tolist()
+    finetune_dataset = torch.utils.data.Subset(_dataset, train_idx) # TODO: need to change the pre-training vs. finetuning precentage
+    test_dataset = torch.utils.data.Subset(_dataset, test_idx)
 
-        # # Create stratified shuffle split object
-        # stratified_split = StratifiedShuffleSplit(
-        #     n_splits=1, test_size=0.2, random_state=args.seed  # Adjust test_size as needed
-        # )
-        # # Generate train and test indices
-        # for train_idx, test_idx in stratified_split.split(np.zeros(len(labels)), labels):
-        #     pass  # The split method returns the indices directly
-
-        # train_dataset = torch.utils.data.Subset(dataset, train_idx)
-        # valid_dataset = torch.utils.data.Subset(dataset, test_idx)
-
-    elif args.dataset == "dgl":
-        train_dataset = LoadBalanceGraphDataset(
-            rw_hops=args.rw_hops,
-            restart_prob=args.restart_prob,
-            positional_embedding_size=args.positional_embedding_size,
-            num_workers=args.num_workers,
-            num_samples=args.num_samples,
-            dgl_graphs_file="./data/small.bin",
-            num_copies=args.num_copies,
-        )
-    else:
-        if args.dataset in GRAPH_CLASSIFICATION_DSETS:
-            train_dataset = GraphClassificationDataset(
-                dataset=args.dataset,
-                rw_hops=args.rw_hops,
-                subgraph_size=args.subgraph_size,
-                restart_prob=args.restart_prob,
-                positional_embedding_size=args.positional_embedding_size,
-            )
-        else:
-            train_dataset = NodeClassificationDataset(
-                dataset=args.dataset,
-                rw_hops=args.rw_hops,
-                subgraph_size=args.subgraph_size,
-                restart_prob=args.restart_prob,
-                positional_embedding_size=args.positional_embedding_size,
-            )
 
     mem = psutil.virtual_memory()
     print("before construct dataloader", mem.used / 1024 ** 3)
-    train_loader = torch.utils.data.DataLoader(
-        dataset=train_dataset,
+    pre_train_loader = torch.utils.data.DataLoader(
+        dataset=pre_train_dataset,
         batch_size=args.batch_size,
         collate_fn=labeled_batcher() if args.finetune else batcher(),
         shuffle=True if args.finetune else False,
@@ -762,13 +772,21 @@ def main(args):
         if args.finetune or args.dataset != "dgl"
         else worker_init_fn,
     )
-    if args.finetune: # XXX: to be update 
-        valid_loader = torch.utils.data.DataLoader(
-            dataset=valid_dataset,
+
+    finetuning_loader = torch.utils.data.DataLoader(
+            dataset=finetune_dataset,
             batch_size=args.batch_size,
             collate_fn=labeled_batcher(),
             num_workers=args.num_workers,
         )
+
+    test_loader = torch.utils.data.DataLoader(
+            dataset=test_dataset,
+            batch_size=args.batch_size,
+            collate_fn=labeled_batcher(),
+            num_workers=args.num_workers,
+        )
+
     mem = psutil.virtual_memory()
     print("before training", mem.used / 1024 ** 3)
 
@@ -806,181 +824,110 @@ def main(args):
         args.hidden_size, n_data, args.nce_k, args.nce_t, use_softmax=True
     ).cuda(args.gpu)
 
-    if args.finetune: # TODO: will nee to add in future to compose downstream fine-tuning with the ctraining
-        criterion = nn.CrossEntropyLoss()
-    else:
-        criterion = NCESoftmaxLoss() if args.moco else NCESoftmaxLossNS()
-        criterion = criterion.cuda(args.gpu)
+    
+    pretrain_criterion = NCESoftmaxLoss() if args.moco else NCESoftmaxLossNS()
+    pretrain_criterion = pretrain_criterion.cuda(args.gpu)
+
+    ft_criterion = nn.CrossEntropyLoss()
 
     model = model.cuda(args.gpu)
     model_ema = model_ema.cuda(args.gpu)
 
-    if args.finetune: # TODO: will nee to add in future to compose downstream fine-tuning with the ctraining
-        output_layer = nn.Linear(
-            in_features=args.hidden_size, out_features=dataset.num_classes
-        )
-        output_layer = output_layer.cuda(args.gpu)
-        output_layer_optimizer = torch.optim.Adam(
-            output_layer.parameters(),
-            lr=args.learning_rate,
-            betas=(args.beta1, args.beta2),
-            weight_decay=args.weight_decay,
-        )
-
-        def clear_bn(m):
-            classname = m.__class__.__name__
-            if classname.find("BatchNorm") != -1:
-                m.reset_running_stats()
-
-        model.apply(clear_bn)
-
-    if args.optimizer == "sgd":
-        optimizer = torch.optim.SGD(
-            model.parameters(),
-            lr=args.learning_rate,
-            momentum=args.momentum,
-            weight_decay=args.weight_decay,
-        )
-    elif args.optimizer == "adam":
-        optimizer = torch.optim.Adam(
-            model.parameters(),
-            lr=args.learning_rate,
-            betas=(args.beta1, args.beta2),
-            weight_decay=args.weight_decay,
-        )
-    elif args.optimizer == "adagrad":
-        optimizer = torch.optim.Adagrad(
-            model.parameters(),
-            lr=args.learning_rate,
-            lr_decay=args.lr_decay_rate,
-            weight_decay=args.weight_decay,
-        )
-    else:
-        raise NotImplementedError
-
+    optimizer = get_optimizer(args, model)
+    
     # optionally resume from a checkpoint
     args.start_epoch = 1
-    if args.resume: # XXX: CP should run in here too
-        print("=> loading checkpoint '{}'".format(args.resume))
-        # checkpoint = torch.load(args.resume, map_location="cpu")
-        checkpoint = torch.load(args.resume)
-        args.start_epoch = checkpoint["epoch"] + 1
-        model.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        contrast.load_state_dict(checkpoint["contrast"])
-        if args.moco:
-            model_ema.load_state_dict(checkpoint["model_ema"])
+    load_checkpoint(args.resume, model, optimizer, contrast)
 
-        print(
-            "=> loaded successfully '{}' (epoch {})".format(
-                args.resume, checkpoint["epoch"]
-            )
-        )
-        del checkpoint
-        torch.cuda.empty_cache()
-
-    # tensorboard
-    #  logger = tb_logger.Logger(logdir=args.tb_folder, flush_secs=2)
+    # tensorboard logger
     sw = SummaryWriter(args.tb_folder)
-    #  plots_q, plots_k = zip(*[train_dataset.getplot(i) for i in range(5)])
-    #  plots_q = torch.cat(plots_q)
-    #  plots_k = torch.cat(plots_k)
-    #  sw.add_images('images/graph_q', plots_q, 0, dataformats="NHWC")
-    #  sw.add_images('images/graph_k', plots_k, 0, dataformats="NHWC")
 
     # routine
     print(args.start_epoch, args.epochs)
     for epoch in range(args.start_epoch, args.start_epoch + args.epochs + 1):
 
         adjust_learning_rate(epoch, args, optimizer)
-        print("==> training...")
-
+        print("==> pre-training...")
         time1 = time.time()
-        if args.finetune:
-            loss, _ = train_finetune(
+        loss = cnt_train(
                 epoch,
-                train_loader,
-                model,
-                output_layer,
-                criterion,
-                optimizer,
-                output_layer_optimizer,
-                sw,
-                args,
-            )
-        if args.ctrain:
-            loss = cnt_train(
-                epoch,
-                train_loader,
+                pre_train_loader,
                 model,
                 model_ema,
                 contrast,
-                criterion,
-                optimizer,
-                sw,
-                args,
-            )
-        else: 
-            loss = train_moco(
-                epoch,
-                train_loader,
-                model,
-                model_ema,
-                contrast,
-                criterion,
+                pretrain_criterion,
                 optimizer,
                 sw,
                 args,
             )
         time2 = time.time()
-        print("epoch {}, total time {:.2f}".format(epoch, time2 - time1))
+        print("epoch {}, total time {:.2f}, loss {:.4f}".format(epoch, time2 - time1, loss))
 
-        # save model
-        if epoch % args.save_freq == 0: 
-            print("==> Saving...")
-            state = {
-                "opt": args,
-                "model": model.state_dict(),
-                "contrast": contrast.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "epoch": epoch,
-            }
-            if args.moco:
-                state["model_ema"] = model_ema.state_dict()
-            save_file = os.path.join(
-                args.model_folder, "ckpt_epoch_{epoch}.pth".format(epoch=epoch)
-            )
-            torch.save(state, save_file)
-            # help release GPU memory
-            del state
-
-        # saving the model
-        print("==> Saving...")
-        state = {
-            "opt": args,
-            "model": model.state_dict(),
-            "contrast": contrast.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "epoch": epoch,
-        }
-        if args.moco:
-            state["model_ema"] = model_ema.state_dict()
-        save_file = os.path.join(args.model_folder, "current.pth")
-        torch.save(state, save_file) # HACK: no need to new save just add new save path
         if epoch % args.save_freq == 0:
-            save_file = os.path.join( 
-                args.model_folder, "ckpt_epoch_{epoch}.pth".format(epoch=epoch)
-            )
-            torch.save(state, save_file)
-        # help release GPU memory
-        del state
-        torch.cuda.empty_cache()
+            save_model(args, model, contrast, optimizer, epoch, checkpoint=True)
+    else:
+        save_model(args, model, contrast, optimizer, epoch, checkpoint=False)
 
-    if args.finetune: # CP should run in here
-        valid_loss, valid_f1 = test_finetune(
-            epoch, valid_loader, model, output_layer, criterion, sw, args
-        )
-        return valid_f1
+    # finetune
+    output_layer = nn.Linear(
+        in_features=args.hidden_size, out_features=dataset.num_classes
+    )
+    output_layer = output_layer.cuda(args.gpu)
+    output_layer_optimizer = torch.optim.Adam(
+        output_layer.parameters(),
+        lr=args.learning_rate,
+        betas=(args.beta1, args.beta2),
+        weight_decay=args.weight_decay,
+    )
+
+    def clear_bn(m):
+        classname = m.__class__.__name__
+        if classname.find("BatchNorm") != -1:
+            m.reset_running_stats()
+
+    model.apply(clear_bn)
+
+    # resume from pre-trained model
+    args.start_epoch = 1
+    pre_trained_save_path = f"{args.model_folder}/pre_training/current.pth"
+    load_checkpoint(pre_trained_save_path, model, optimizer, contrast)
+    model = model.cuda(args.gpu) 
+
+    # tensorboard logger
+    sw = SummaryWriter(args.tb_folder)
+
+    # routine
+    print(args.start_epoch, args.epochs)
+    for epoch in range(args.start_epoch, args.start_epoch + args.epochs + 1):
+
+        adjust_learning_rate(epoch, args, optimizer)
+        print("==> finetuning...")
+        time1 = time.time()
+        loss, _ = train_finetune(
+                epoch,
+                finetuning_loader,
+                model,
+                output_layer,
+                ft_criterion,
+                optimizer,
+                output_layer_optimizer,
+                sw,
+                args,
+            )
+        time2 = time.time()
+        print("epoch {}, total time {:.2f}, loss {:.4f}".format(epoch, time2 - time1, loss))
+
+        if epoch % args.save_freq == 0:
+            save_model(args, model, contrast, optimizer, epoch, phase='finetune', checkpoint=True)
+    else:
+        save_model(args, model, contrast, optimizer, epoch, phase='finetune', checkpoint=False)
+
+    
+    valid_loss, valid_f1 = test_finetune(
+        epoch, test_loader, model, output_layer, ft_criterion, sw, args
+    )
+    print(f"[TEST] loss: {valid_loss}, f1-score: {valid_f1}")
+    return valid_f1
 
 
 if __name__ == "__main__":

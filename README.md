@@ -72,6 +72,7 @@ Pretrain E2E with `K = 255`:
 
 ```bash
 bash scripts/pretrain.sh <gpu> --batch-size 256
+bash scripts/pretrain.sh 0 --batch-size 256
 ```
 
 #### MoCo
@@ -81,6 +82,14 @@ Pretrain MoCo with `K = 16384; m = 0.999`:
 ```bash
 bash scripts/pretrain.sh <gpu> --moco --nce-k 16384
 ```
+
+### Continuous training
+
+```bash
+bash scripts/ctrain.sh <load_path> <gpu> <dataset>
+bash scripts/ctrain.sh /data/pathin/gfms/GCC/saved/Pretrain_moco_False_dgl_gin_layer_5_lr_0.005_decay_1e-05_bsz_256_hid_64_samples_2000_nce_t_0.07_nce_k_32_rw_hops_4_restart_prob_0.8_aug_1st_ft_False_deg_16_pos_32_momentum_0.999 1 h-index --batch-size 256
+```
+
 
 #### Download Pretrained Models
 
@@ -111,7 +120,7 @@ bash scripts/generate_jensen.sh <load_path> <dataset_1> <dataset_2> ...
 For example:
 
 ```bash
-bash scripts/generate_jensen.sh saved/Pretrain_moco_True_dgl_gin_layer_5_lr_0.005_decay_1e-05_bsz_32_hid_64_samples_2000_nce_t_0.07_nce_k_16384_rw_hops_256_restart_prob_0.8_aug_1st_ft_False_deg_16_pos_32_momentum_0.999/current.pth usa_airport kdd imdb-binary
+bash scripts/generate_jensen.sh data/models/Pretrain_moco_True_dgl_gin_layer_5_lr_0.005_decay_1e-05_bsz_32_hid_64_samples_2000_nce_t_0.07_nce_k_16384_rw_hops_256_restart_prob_0.8_aug_1st_ft_False_deg_16_pos_32_momentum_0.999/current.pth usa_airport kdd imdb-binary
 ```
 
 #### Node Classification
@@ -124,7 +133,8 @@ Evaluate GCC on multiple datasets:
 
 ```bash
 bash scripts/generate_jensen.sh <load_path> usa_airport h-index
-bash scripts/node_classification/ours.sh <load_path> <hidden_size> usa_airport h-index
+bash scripts/node_classification/ours.sh saved/Pretrain_moco_True_dgl_gin_layer_5_lr_0.005_decay_1e-05_bsz_32_hid_64_samples_2000_nce_t_0.07_nce_k_16384_rw_hops_256_restart_prob_0.8_aug_1st_ft_False_deg_16_pos_32_momentum_0.999/current.pth 64 usa_airport h-index
+python downstream_node_classification.py saved/Pretrain_moco_True_dgl_gin_layer_5_lr_0.005_decay_1e-05_bsz_32_hid_64_samples_2000_nce_t_0.07_nce_k_16384_rw_hops_256_restart_prob_0.8_aug_1st_ft_False_deg_16_pos_32_momentum_0.999/current.pth 64 usa_airport h-index
 ```
 
 ##### Supervised (Table 2 full)
